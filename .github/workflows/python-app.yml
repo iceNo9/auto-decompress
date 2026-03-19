@@ -55,6 +55,7 @@ jobs:
           VERSION=${VERSION#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      # 使用 heredoc 方式输出多行 notes，避免转义问题
       - id: changelog
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
@@ -66,11 +67,11 @@ jobs:
             NOTES=$(git log "$PREV..$TAG" --pretty=format:"- %s")
           fi
 
-          NOTES_ESCAPED="${NOTES//'%'/'%25'}"
-          NOTES_ESCAPED="${NOTES_ESCAPED//$'\n'/'%0A'}"
-          NOTES_ESCAPED="${NOTES_ESCAPED//$'\r'/'%0D'}"
-
-          echo "notes=$NOTES_ESCAPED" >> $GITHUB_OUTPUT
+          # 使用 heredoc 写入 GITHUB_OUTPUT
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "notes<<$EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "$EOF" >> $GITHUB_OUTPUT
 
 # ========================
 # 构建（PyInstaller 稳定版）
@@ -84,10 +85,13 @@ jobs:
         include:
           - os: windows-latest
             name: windows
+            cache_path: ~\AppData\Local\pip\Cache
           - os: ubuntu-latest
             name: linux
+            cache_path: ~/.cache/pip
           - os: macos-latest
             name: macos
+            cache_path: ~/Library/Caches/pip
 
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +104,7 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
+          path: ${{ matrix.cache_path }}
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
       - name: 安装依赖
@@ -109,7 +113,7 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # ✅ PyInstaller 打包为文件夹
+      # PyInstaller 打包为文件夹
       - name: PyInstaller 打包（非 onefile）
         shell: bash
         run: |
@@ -123,13 +127,12 @@ jobs:
             --console \
             --onedir
 
-      # ✅ 打包目录为 zip
+      # 打包目录为 zip
       - name: 压缩构建产物
         shell: bash
         run: |
           cd build
           NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}"
-          mv "$NAME" "$NAME"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             powershell Compress-Archive -Path "$NAME" -DestinationPath "$NAME.zip"
           else
@@ -142,8 +145,11 @@ jobs:
         run: |
           FILE="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}.zip"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
+            # 修正 Windows 下的 hash 提取，并输出 "hash 文件名" 格式
             certutil -hashfile "$FILE" SHA256 > tmp.txt
-            tail -n 1 tmp.txt > "$FILE.sha256"
+            # 第二行是 hash 值，提取后与文件名拼接
+            HASH=$(sed -n '2p' tmp.txt | tr -d '\r')
+            echo "$HASH  $FILE" > "$FILE.sha256"
           else
             shasum -a 256 "$FILE" > "$FILE.sha256"
           fi
@@ -181,22 +187,28 @@ jobs:
           find artifacts -type f -exec mv {} release/ \;
           ls -lh release
 
+      # 将多行 notes 写入临时文件，避免命令行转义问题
+      - name: 准备 Release Notes 文件
+        run: |
+          cat > release_notes.txt << 'EOF'
+          ${{ needs.meta.outputs.notes }}
+          EOF
+
       - name: 发布 Release（自动覆盖）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ needs.meta.outputs.tag }}"
           VERSION="${{ needs.meta.outputs.version }}"
-          NOTES="${{ needs.meta.outputs.notes }}"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" \
               --title "Release $VERSION" \
-              --notes "$NOTES"
+              --notes-file release_notes.txt
           else
             gh release create "$TAG" \
               --title "Release $VERSION" \
-              --notes "$NOTES"
+              --notes-file release_notes.txt
           fi
 
           gh release upload "$TAG" ./release/* --clobber
