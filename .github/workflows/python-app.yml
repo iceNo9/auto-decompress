@@ -1,4 +1,4 @@
-name: 构建并发布可执行文件（Nuitka稳定版）
+name: 构建并发布可执行文件（PyInstaller）
 
 on:
   push:
@@ -73,7 +73,7 @@ jobs:
           echo "notes=$NOTES_ESCAPED" >> $GITHUB_OUTPUT
 
 # ========================
-# 构建（Nuitka）
+# 构建（PyInstaller 稳定版）
 # ========================
   build:
     needs: meta
@@ -107,43 +107,40 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install nuitka
+          pip install pyinstaller
 
-      # ✅ 关键：不使用 onefile
-      - name: Nuitka 构建（稳定版）
+      # ✅ PyInstaller 打包为文件夹
+      - name: PyInstaller 打包（非 onefile）
         shell: bash
         run: |
-          python -m nuitka main.py \
-            --standalone \
-            --assume-yes-for-downloads \
-            --lto=yes \
-            --output-dir=build \
-            --output-filename="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}"
+          OUT_NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}"
+          pyinstaller main.py \
+            --name "$OUT_NAME" \
+            --distpath build \
+            --workpath build/temp \
+            --specpath build/spec \
+            --noconfirm \
+            --console \
+            --onedir
 
       # ✅ 打包目录为 zip
       - name: 压缩构建产物
         shell: bash
         run: |
           cd build
-
-          DIST_DIR=$(find . -type d -name "*.dist" | head -n1)
           NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}"
-
-          mv "$DIST_DIR" "$NAME"
-
+          mv "$NAME" "$NAME"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             powershell Compress-Archive -Path "$NAME" -DestinationPath "$NAME.zip"
           else
             zip -r "$NAME.zip" "$NAME"
           fi
-
           mv "$NAME.zip" ..
 
       - name: 生成 SHA256
         shell: bash
         run: |
           FILE="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}.zip"
-
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             certutil -hashfile "$FILE" SHA256 > tmp.txt
             tail -n 1 tmp.txt > "$FILE.sha256"
