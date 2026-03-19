@@ -1,0 +1,129 @@
+name: 构建可执行文件
+
+on:
+  release:
+    types: [published]
+  push:
+    tags: ['v*']  # 推送标签时触发
+
+jobs:
+  build-windows:
+    name: Windows构建
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: 用PyInstaller打包
+      run: |
+        pyinstaller --onefile --name ad-windows main.py
+    
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-executable
+        path: dist/ad-windows.exe
+  
+  build-linux:
+    name: Linux构建
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: 用PyInstaller打包
+      run: |
+        pyinstaller --onefile --name ad-linux main.py
+    
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-executable
+        path: dist/ad-linux
+  
+  build-macos:
+    name: macOS构建
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: 用PyInstaller打包
+      run: |
+        pyinstaller --onefile --name ad-macos main.py
+    
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-executable
+        path: dist/ad-macos
+  
+  upload-release:
+    name: 上传到Release
+    if: github.event_name == 'release'
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: 下载Windows构建
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-executable
+        path: release/
+    
+    - name: 下载Linux构建
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-executable
+        path: release/
+    
+    - name: 下载macOS构建
+      uses: actions/download-artifact@v4
+      with:
+        name: macos-executable
+        path: release/
+    
+    - name: 上传到Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/ad-windows.exe
+          release/ad-linux
+          release/ad-macos
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
