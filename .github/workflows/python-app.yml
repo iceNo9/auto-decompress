@@ -129,7 +129,6 @@ jobs:
         shell: bash
         run: |
           python -m nuitka \
-            --onefile \
             --assume-yes-for-downloads \
             --output-filename="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}${{ matrix.ext }}" \
             main.py
