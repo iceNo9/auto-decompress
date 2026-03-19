@@ -279,7 +279,7 @@ jobs:
         cat checksums.txt
     
     - name: 上传到Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v1  # 降级到v1版本
       with:
         name: Release ${{ needs.get-version.outputs.version }}
         tag_name: ${{ needs.get-version.outputs.tag_name }}
