@@ -1,4 +1,4 @@
-name: 构建并发布可执行文件（高级版）
+name: 构建并发布可执行文件（Nuitka稳定版）
 
 on:
   push:
@@ -25,7 +25,6 @@ jobs:
 # 版本 + Changelog
 # ========================
   meta:
-    name: 解析版本
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -35,10 +34,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 必须，不然拿不到历史
+          fetch-depth: 0
 
-      - name: 获取tag
-        id: tag
+      - id: tag
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             if [[ -n "${{ github.event.inputs.tag_name }}" ]]; then
@@ -49,19 +47,15 @@ jobs:
           else
             TAG="${{ github.ref_name }}"
           fi
-
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: 提取版本号
-        id: ver
+      - id: ver
         run: |
           VERSION="${{ steps.tag.outputs.tag }}"
           VERSION=${VERSION#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # ✅ 自动 changelog（核心）
-      - name: 生成 Changelog
-        id: changelog
+      - id: changelog
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           PREV=$(git tag --sort=-v:refname | grep -A1 "^$TAG$" | tail -n1)
@@ -71,9 +65,6 @@ jobs:
           else
             NOTES=$(git log "$PREV..$TAG" --pretty=format:"- %s")
           fi
-
-          echo "生成日志:"
-          echo "$NOTES"
 
           NOTES_ESCAPED="${NOTES//'%'/'%25'}"
           NOTES_ESCAPED="${NOTES_ESCAPED//$'\n'/'%0A'}"
@@ -85,23 +76,18 @@ jobs:
 # 构建（Nuitka）
 # ========================
   build:
-    name: 构建 (${{ matrix.os }})
     needs: meta
     runs-on: ${{ matrix.os }}
 
     strategy:
-      fail-fast: false
       matrix:
         include:
           - os: windows-latest
             name: windows
-            ext: ".exe"
           - os: ubuntu-latest
             name: linux
-            ext: ""
           - os: macos-latest
             name: macos
-            ext: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +98,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # ✅ pip cache
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
@@ -124,19 +109,40 @@ jobs:
           pip install -r requirements.txt
           pip install nuitka
 
-      # ✅ Nuitka 构建（核心）
-      - name: Nuitka 打包
+      # ✅ 关键：不使用 onefile
+      - name: Nuitka 构建（稳定版）
         shell: bash
         run: |
-          python -m nuitka \
+          python -m nuitka main.py \
+            --standalone \
             --assume-yes-for-downloads \
-            --output-filename="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}${{ matrix.ext }}" \
-            main.py
+            --lto=yes \
+            --output-dir=build \
+            --output-filename="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}"
+
+      # ✅ 打包目录为 zip
+      - name: 压缩构建产物
+        shell: bash
+        run: |
+          cd build
+
+          DIST_DIR=$(find . -type d -name "*.dist" | head -n1)
+          NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}"
+
+          mv "$DIST_DIR" "$NAME"
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            powershell Compress-Archive -Path "$NAME" -DestinationPath "$NAME.zip"
+          else
+            zip -r "$NAME.zip" "$NAME"
+          fi
+
+          mv "$NAME.zip" ..
 
       - name: 生成 SHA256
         shell: bash
         run: |
-          FILE="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}${{ matrix.ext }}"
+          FILE="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}.zip"
 
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             certutil -hashfile "$FILE" SHA256 > tmp.txt
@@ -145,20 +151,17 @@ jobs:
             shasum -a 256 "$FILE" > "$FILE.sha256"
           fi
 
-          cat "$FILE.sha256"
-
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.name }}
           path: |
-            ${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}*
+            *.zip
             *.sha256
 
 # ========================
-# Release（自动覆盖）
+# Release
 # ========================
   release:
-    name: 发布 Release
     needs: [meta, build]
     runs-on: ubuntu-latest
     permissions:
@@ -179,25 +182,9 @@ jobs:
         run: |
           mkdir release
           find artifacts -type f -exec mv {} release/ \;
-          rm -f release/tmp.txt
           ls -lh release
 
-      - name: 生成 checksums
-        run: |
-          cd release
-          echo "# SHA256 Checksums" > checksums.txt
-          for f in *; do
-            if [[ "$f" != *.sha256 && "$f" != "checksums.txt" ]]; then
-              if [[ -f "$f.sha256" ]]; then
-                cat "$f.sha256" >> checksums.txt
-              else
-                shasum -a 256 "$f" >> checksums.txt
-              fi
-            fi
-          done
-
-      # ✅ 自动创建或覆盖
-      - name: 发布 Release
+      - name: 发布 Release（自动覆盖）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -205,18 +192,14 @@ jobs:
           VERSION="${{ needs.meta.outputs.version }}"
           NOTES="${{ needs.meta.outputs.notes }}"
 
-          # 如果存在就更新，不存在就创建
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release 已存在，更新..."
             gh release edit "$TAG" \
               --title "Release $VERSION" \
               --notes "$NOTES"
           else
-            echo "创建 Release..."
             gh release create "$TAG" \
               --title "Release $VERSION" \
               --notes "$NOTES"
           fi
 
-          # 强制覆盖上传文件
           gh release upload "$TAG" ./release/* --clobber
