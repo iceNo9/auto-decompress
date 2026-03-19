@@ -249,49 +249,53 @@ jobs:
         echo "=== 下载的文件列表 ==="
         ls -la release_files/
         echo ""
-        echo "=== 文件详细信息 ==="
-        find release_files/ -type f -exec ls -lh {} \;
+        echo "=== 文件大小 ==="
+        du -sh release_files/*
     
-    - name: 准备上传文件列表
-      id: prepare_files
+    - name: 设置文件权限
       run: |
-        # 生成文件列表，每行一个文件
-        FILES_LIST=""
-        for file in release_files/*; do
-          if [ -f "$file" ]; then
-            FILES_LIST="$FILES_LIST$file"$'\n'
+        chmod +x release_files/ad-linux-* release_files/ad-macos-* 2>/dev/null || true
+        echo "文件权限设置完成"
+    
+    - name: 创建校验和汇总文件
+      run: |
+        cd release_files
+        echo "# SHA256 Checksums" > checksums.txt
+        echo "生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> checksums.txt
+        echo "" >> checksums.txt
+        
+        for file in ad-*; do
+          if [ -f "$file" ] && [[ ! "$file" == *.sha256 ]] && [[ ! "$file" == "checksums.txt" ]]; then
+            if [ -f "$file.sha256" ]; then
+              cat "$file.sha256" >> checksums.txt
+            else
+              sha256sum "$file" >> checksums.txt
+            fi
           fi
         done
-        echo "files<<EOF" >> $GITHUB_OUTPUT
-        echo "$FILES_LIST" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
         
-        echo "将上传以下文件："
-        echo "$FILES_LIST"
+        echo ""
+        echo "校验和汇总文件内容："
+        cat checksums.txt
     
     - name: 上传到Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         name: Release ${{ needs.get-version.outputs.version }}
         tag_name: ${{ needs.get-version.outputs.tag_name }}
         body: |
           ## 🎉 ${{ github.event_name == 'workflow_dispatch' && '手动构建' || '自动构建' }}的Release v${{ needs.get-version.outputs.version }}
           
-          ### 📦 包含文件
-          - **Windows**: `ad-windows-${{ needs.get-version.outputs.version }}.exe`
-          - **Linux**: `ad-linux-${{ needs.get-version.outputs.version }}`
-          - **macOS**: `ad-macos-${{ needs.get-version.outputs.version }}`
+          ### 📦 下载文件
+          | 文件 | 平台 | 校验文件 |
+          |------|------|----------|
+          | `ad-windows-${{ needs.get-version.outputs.version }}.exe` | Windows | `ad-windows-${{ needs.get-version.outputs.version }}.exe.sha256` |
+          | `ad-linux-${{ needs.get-version.outputs.version }}` | Linux | `ad-linux-${{ needs.get-version.outputs.version }}.sha256` |
+          | `ad-macos-${{ needs.get-version.outputs.version }}` | macOS | `ad-macos-${{ needs.get-version.outputs.version }}.sha256` |
           
-          ### 🔍 校验文件
-          每个文件都提供了对应的SHA256校验文件（.sha256后缀）
+          ### 🔍 校验文件完整性
+          所有文件都提供了SHA256校验和，您可以使用以下命令验证：
           
-          ### 📝 更新内容
-          ${{ needs.get-version.outputs.release_notes }}
-          
-          ### ⚙️ 使用方法
-          **Windows**: 直接双击运行
-          
-          **Linux/macOS**: 
-          ```bash
-          chmod +x ad-*-${{ needs.get-version.outputs.version }}
-          ./ad-*-${{ needs.get-version.outputs.version }}
+          **Windows (PowerShell):**
+          ```powershell
+          Get-FileHash ad-windows-${{ needs.get-version.outputs.version }}.exe -Algorithm SHA256
