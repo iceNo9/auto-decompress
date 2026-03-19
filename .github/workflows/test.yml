@@ -1,0 +1,80 @@
+# .github/workflows/test.yml
+name: Test Workflow
+
+on:
+  # 支持手动触发
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（可选）'
+        required: false
+        default: 'manual-test'
+      environment:
+        description: '测试环境'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - staging
+          - production
+
+  # 推送标签或推送到main分支时触发
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Debug Info
+        run: |
+          echo "================== 事件信息 =================="
+          echo "Event name: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Ref name: ${{ github.ref_name }}"
+          echo "Triggering actor: ${{ github.actor }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run number: ${{ github.run_number }}"
+          
+      - name: 显示手动触发参数
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "================== 手动触发参数 =================="
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+      
+      - name: 显示标签信息
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "================== 标签信息 =================="
+          echo "Tag name: ${{ github.ref_name }}"
+          echo "这是由标签触发的构建"
+      
+      - name: 显示分支信息
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "================== 分支信息 =================="
+          echo "Branch: main"
+          echo "这是由main分支推送触发的构建"
+      
+      - name: 创建测试文件
+        run: |
+          echo "================== 创建测试文件 =================="
+          echo "Test file created at $(date)" > test-output.txt
+          echo "Event: ${{ github.event_name }}" >> test-output.txt
+          cat test-output.txt
+      
+      - name: 上传测试产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-${{ github.run_id }}
+          path: test-output.txt
