@@ -1,4 +1,4 @@
-name: 构建并发布可执行文件
+name: 构建并发布可执行文件（高级版）
 
 on:
   push:
@@ -20,21 +20,22 @@ env:
   PYTHON_VERSION: "3.10"
   PROJECT_NAME: "ad"
 
-# ========================
-# 版本解析
-# ========================
 jobs:
+# ========================
+# 版本 + Changelog
+# ========================
   meta:
     name: 解析版本
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.ver.outputs.version }}
+      notes: ${{ steps.changelog.outputs.notes }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # 必须，不然拿不到历史
 
       - name: 获取tag
         id: tag
@@ -49,13 +50,7 @@ jobs:
             TAG="${{ github.ref_name }}"
           fi
 
-          if [[ -z "$TAG" ]]; then
-            echo "没有找到tag"
-            exit 1
-          fi
-
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "使用tag: $TAG"
 
       - name: 提取版本号
         id: ver
@@ -63,10 +58,31 @@ jobs:
           VERSION="${{ steps.tag.outputs.tag }}"
           VERSION=${VERSION#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "版本: $VERSION"
+
+      # ✅ 自动 changelog（核心）
+      - name: 生成 Changelog
+        id: changelog
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          PREV=$(git tag --sort=-v:refname | grep -A1 "^$TAG$" | tail -n1)
+
+          if [[ -z "$PREV" || "$PREV" == "$TAG" ]]; then
+            NOTES=$(git log --pretty=format:"- %s" -n 20)
+          else
+            NOTES=$(git log "$PREV..$TAG" --pretty=format:"- %s")
+          fi
+
+          echo "生成日志:"
+          echo "$NOTES"
+
+          NOTES_ESCAPED="${NOTES//'%'/'%25'}"
+          NOTES_ESCAPED="${NOTES_ESCAPED//$'\n'/'%0A'}"
+          NOTES_ESCAPED="${NOTES_ESCAPED//$'\r'/'%0D'}"
+
+          echo "notes=$NOTES_ESCAPED" >> $GITHUB_OUTPUT
 
 # ========================
-# 构建（矩阵）
+# 构建（Nuitka）
 # ========================
   build:
     name: 构建 (${{ matrix.os }})
@@ -92,38 +108,35 @@ jobs:
         with:
           ref: ${{ needs.meta.outputs.tag }}
 
-      # ✅ Python
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # ✅ pip缓存（大幅提速）
-      - name: 缓存 pip
-        uses: actions/cache@v4
+      # ✅ pip cache
+      - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
-      # ✅ 安装依赖
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller --no-cache-dir
+          pip install nuitka
 
-      # ✅ 打包（已修复 Windows 报错）
-      - name: 打包
+      # ✅ Nuitka 构建（核心）
+      - name: Nuitka 打包
         shell: bash
         run: |
-          pyinstaller --onefile \
-            --name "${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}" \
+          python -m nuitka \
+            --onefile \
+            --assume-yes-for-downloads \
+            --output-filename="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}${{ matrix.ext }}" \
             main.py
 
-      # ✅ 生成 SHA256（跨平台稳定）
-      - name: 生成校验
+      - name: 生成 SHA256
         shell: bash
         run: |
-          cd dist
           FILE="${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}${{ matrix.ext }}"
 
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -135,14 +148,15 @@ jobs:
 
           cat "$FILE.sha256"
 
-      # ✅ 上传 artifact
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.name }}
-          path: dist/*
+          path: |
+            ${{ env.PROJECT_NAME }}-${{ matrix.name }}-${{ needs.meta.outputs.version }}*
+            *.sha256
 
 # ========================
-# 发布 Release（最佳实践）
+# Release（自动覆盖）
 # ========================
   release:
     name: 发布 Release
@@ -156,20 +170,20 @@ jobs:
       (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
 
     steps:
-      - name: 下载所有构建产物
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      # ✅ 展平目录（关键，不然上传失败）
       - name: 整理文件
         run: |
           mkdir release
           find artifacts -type f -exec mv {} release/ \;
+          rm -f release/tmp.txt
           ls -lh release
 
-      # ✅ 生成总校验文件
-      - name: 汇总SHA256
+      - name: 生成 checksums
         run: |
           cd release
           echo "# SHA256 Checksums" > checksums.txt
@@ -183,17 +197,27 @@ jobs:
             fi
           done
 
-          cat checksums.txt
-
-      # ✅ 发布（最稳定方案）
-      - name: 发布到 GitHub Release
+      # ✅ 自动创建或覆盖
+      - name: 发布 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ needs.meta.outputs.tag }}"
           VERSION="${{ needs.meta.outputs.version }}"
+          NOTES="${{ needs.meta.outputs.notes }}"
 
-          gh release create "$TAG" \
-            --title "Release $VERSION" \
-            --notes "自动构建版本 $VERSION" \
-            ./release/*
+          # 如果存在就更新，不存在就创建
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release 已存在，更新..."
+            gh release edit "$TAG" \
+              --title "Release $VERSION" \
+              --notes "$NOTES"
+          else
+            echo "创建 Release..."
+            gh release create "$TAG" \
+              --title "Release $VERSION" \
+              --notes "$NOTES"
+          fi
+
+          # 强制覆盖上传文件
+          gh release upload "$TAG" ./release/* --clobber
